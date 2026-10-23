@@ -19,6 +19,12 @@ const opts = (arr, sel, all) => (all ? `<option value="">${esc(all)}</option>` :
   const [val, label] = Array.isArray(v) ? v : [v, v];
   return `<option value="${esc(val)}" ${val === sel ? "selected" : ""}>${esc(label)}</option>`;
 }).join("");
+const LEAD_DEFAULTS = {
+  leadSources: ["Meta Ads (FB / Instagram)", "Google Ads", "Instagram Organic", "Facebook Organic", "Google Business Profile",
+    "Website / SEO", "WhatsApp", "YouTube", "Referral", "Other"],
+  leadServices: ["Hair Transplant", "Hair Fall / PRP / GFC", "Dandruff / Scalp", "Acne & Scars", "Pigmentation",
+    "Laser Hair Removal", "Anti-ageing", "Skin – General", "Other"],
+};
 const STATUSES = ["Committed", "In Progress", "Completed", "Blocked"];
 const PRIORITIES = ["High", "Medium", "Low"];
 const isOverdue = (t) => t.status !== "Completed" && t.dueDate < today();
@@ -35,8 +41,8 @@ const errMsg = (e) => (e?.code || "").replace("auth/", "").replace(/-/g, " ") ||
 
 // ---------------------------------------------------------------- state
 const S = {
-  user: null, profile: null, settings: { ...config.DEFAULT_SETTINGS }, users: [], tasks: [],
-  view: "", f: { period: "this-month", from: "", to: "", branch: "", team: "", uid: "", category: "", status: "" },
+  user: null, profile: null, settings: { ...config.DEFAULT_SETTINGS }, users: [], tasks: [], leads: [],
+  view: "", f: { period: "this-month", from: "", to: "", branch: "", team: "", uid: "", category: "", status: "", source: "", service: "" },
   charts: [], sort: { key: "rate", dir: -1 },
 };
 const isAdmin = () => S.profile?.role === "admin";
@@ -89,8 +95,10 @@ async function loadTasks() {
   if (isAdmin()) {
     const trendFrom = addDays(weekStart(to), -49);
     S.tasks = await store.listTasks({ from: from < trendFrom ? from : trendFrom, to });
+    S.leads = await store.listLeads({ from, to });
   } else {
     S.tasks = await store.listTasks({ uid: S.user.uid });
+    S.leads = await store.listLeads({ uid: S.user.uid });
   }
 }
 
@@ -105,7 +113,7 @@ store.onAuth(async (u) => {
     if (!p) return renderBlocked("Your login exists, but your profile hasn't been set up. Please ask the admin to add you in the Team page.");
     if (!p.active) return renderBlocked("Your account has been deactivated. Please contact the admin.");
     S.profile = p;
-    S.settings = await store.getSettings();
+    S.settings = { ...LEAD_DEFAULTS, ...(await store.getSettings()) };
     if (isAdmin()) S.users = await store.listUsers();
     S.view = isAdmin() ? "dashboard" : "my-dashboard";
     await loadTasks();
@@ -152,8 +160,8 @@ function renderLogin() {
 }
 
 // ---------------------------------------------------------------- shell
-const NAV_ADMIN = [["dashboard", "Dashboard"], ["tasks", "All Tasks"], ["team", "Team"], ["settings", "Settings"]];
-const NAV_STAFF = [["my-dashboard", "My Dashboard"], ["my-tasks", "My Tasks"]];
+const NAV_ADMIN = [["dashboard", "Dashboard"], ["tasks", "All Tasks"], ["leads", "Leads"], ["team", "Team"], ["settings", "Settings"]];
+const NAV_STAFF = [["my-dashboard", "My Dashboard"], ["my-tasks", "My Tasks"], ["my-leads", "My Leads"]];
 
 function renderShell() {
   const nav = isAdmin() ? NAV_ADMIN : NAV_STAFF;
@@ -165,7 +173,7 @@ function renderShell() {
       <div class="me"><span>${esc(S.profile.name)}</span><button class="btn sm" id="out">Sign out</button></div>
     </header>
     <main id="main"></main>`;
-  $$("header nav button").forEach((b) => (b.onclick = () => { S.view = b.dataset.v; renderShell(); }));
+  $$("header nav button").forEach((b) => (b.onclick = () => { S.view = b.dataset.v; S.showAllLeads = false; renderShell(); }));
   $("#out").onclick = () => store.signOut();
   if ($("#resetDemo")) $("#resetDemo").onclick = () => { store.resetDemo(); store.signOut(); };
   renderView();
@@ -174,13 +182,13 @@ function renderShell() {
 function renderView() {
   destroyCharts();
   ({ dashboard: viewDashboard, tasks: viewTasks, team: viewTeam, settings: viewSettings,
-    "my-dashboard": viewMyDashboard, "my-tasks": viewMyTasks })[S.view]();
+    "my-dashboard": viewMyDashboard, "my-tasks": viewMyTasks, leads: viewLeads, "my-leads": viewLeads })[S.view]();
 }
 
 function destroyCharts() { S.charts.forEach((c) => c.destroy()); S.charts = []; }
 
 // ---------------------------------------------------------------- filters
-function filterBar({ people = true, status = false } = {}) {
+function filterBar({ people = true, status = false, leads = false } = {}) {
   const [from, to] = range();
   const staff = S.users.filter((u) => u.role !== "admin" && (!S.f.branch || u.branch === S.f.branch))
     .sort((a, b) => a.name.localeCompare(b.name)).map((u) => [u.uid, u.name]);
@@ -190,7 +198,9 @@ function filterBar({ people = true, status = false } = {}) {
     ${isAdmin() ? `<label>Branch<select data-f="branch">${opts(S.settings.branches, S.f.branch, "All branches")}</select></label>
     <label>Team<select data-f="team">${opts(S.settings.teams, S.f.team, "All teams")}</select></label>
     ${people ? `<label>Person<select data-f="uid">${opts(staff, S.f.uid, "All people")}</select></label>` : ""}` : ""}
-    <label>Category<select data-f="category">${opts(S.settings.categories, S.f.category, "All categories")}</select></label>
+    ${leads ? `<label>Lead source<select data-f="source">${opts(S.settings.leadSources, S.f.source, "All sources")}</select></label>
+    <label>Service<select data-f="service">${opts(S.settings.leadServices, S.f.service, "All services")}</select></label>`
+    : `<label>Category<select data-f="category">${opts(S.settings.categories, S.f.category, "All categories")}</select></label>`}
     ${status ? `<label>Status<select data-f="status">${opts([...STATUSES, "Overdue"], S.f.status, "All statuses")}</select></label>` : ""}
     <span class="range">${fmt(from)} – ${fmt(to)}</span>
   </div>`;
@@ -399,9 +409,9 @@ function viewTeam() {
       <td>${esc(u.branch)}</td><td>${esc(u.team)}</td><td>${u.active ? "Active" : "Inactive"}</td>
       <td class="nowrap"><button class="btn sm" data-u="${u.uid}">Edit</button>
       ${DEMO ? "" : `<button class="btn sm" data-reset="${esc(u.email)}">Reset password</button>`}
-      ${u.uid !== S.user.uid ? `<button class="btn sm ghost" data-act="${u.uid}">${u.active ? "Deactivate" : "Activate"}</button>` : ""}</td></tr>`).join("")}
+      ${u.uid !== S.user.uid ? `<button class="btn sm ghost" data-act="${u.uid}">${u.active ? "Deactivate" : "Activate"}</button> <button class="btn sm danger" data-delu="${u.uid}">Delete</button>` : ""}</td></tr>`).join("")}
     </tbody></table></div></section>
-    <p class="muted sm">Staff can only sign in and see their own commitments. Deactivated people lose access immediately but their past tasks stay in reports.</p>`;
+    <p class="muted sm">Staff can only sign in and see their own commitments. Deactivated people lose access immediately but their past tasks stay in reports. <b>Delete</b> removes the person from this list for good.</p>`;
   $("#add").onclick = () => userModal(null);
   $$("[data-u]").forEach((b) => (b.onclick = () => userModal(S.users.find((u) => u.uid === b.dataset.u))));
   $$("[data-reset]").forEach((b) => (b.onclick = async () => {
@@ -411,6 +421,22 @@ function viewTeam() {
     const u = S.users.find((x) => x.uid === b.dataset.act);
     try { await store.updateUser(u.uid, { active: !u.active }); u.active = !u.active; renderView(); } catch (e) { toast(errMsg(e), true); }
   }));
+  $$("[data-delu]").forEach((b) => (b.onclick = () => deleteUserModal(S.users.find((x) => x.uid === b.dataset.delu))));
+}
+
+function deleteUserModal(u) {
+  modal("Delete person", `
+    <div class="task-sum"><b>${esc(u.name)}</b><span class="muted sm">${esc(u.email)} · ${esc(u.branch)}</span></div>
+    <p>This removes ${esc(u.name)} from the Team list and blocks their access to the tracker. It cannot be undone.</p>
+    <label class="check"><input type="checkbox" name="withTasks"> Also delete all of their tasks and lead entries (otherwise they stay in reports)</label>
+    ${DEMO ? "" : `<p class="muted sm">To free the email for re-use, also delete the login in Firebase console → Authentication → Users.</p>`}`,
+  async (f) => {
+    await store.deleteUser(u.uid, !!f.withTasks);
+    S.users = S.users.filter((x) => x.uid !== u.uid);
+    if (f.withTasks) { S.tasks = S.tasks.filter((t) => t.uid !== u.uid); S.leads = S.leads.filter((l) => l.uid !== u.uid); }
+    toast(`${u.name} deleted`);
+    renderView();
+  }, "Delete permanently");
 }
 
 function userModal(u) {
@@ -436,17 +462,21 @@ function viewSettings() {
   const box = (k, label, hint) => `<section class="card"><h3>${label}</h3><p class="muted sm">${hint}</p>
     <textarea name="${k}" rows="10">${esc(s[k].join("\n"))}</textarea></section>`;
   $("#main").innerHTML = `<div class="page-head"><h2>Settings</h2></div>
-    <form id="sf"><div class="grid3">
+    <form id="sf"><div class="grid3 settings-grid">
       ${box("branches", "Locations / branches", "One per line, e.g. “Chennai - Anna Nagar”.")}
       ${box("teams", "Teams", "Digital marketing teams, one per line.")}
       ${box("categories", "Task categories", "Types of marketing work, one per line.")}
+      ${box("leadSources", "Lead sources", "Where leads come from, one per line.")}
+      ${box("leadServices", "Lead services", "Treatment / service the lead asked about, one per line.")}
     </div><button class="btn primary">Save settings</button></form>`;
   $("#sf").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const lines = (k) => [...new Set(f.get(k).split("\n").map((x) => x.trim()).filter(Boolean))];
-    const ns = { branches: lines("branches"), teams: lines("teams"), categories: lines("categories") };
-    if (!ns.branches.length || !ns.categories.length) return toast("Add at least one branch and one category", true);
+    const ns = { branches: lines("branches"), teams: lines("teams"), categories: lines("categories"),
+      leadSources: lines("leadSources"), leadServices: lines("leadServices") };
+    if (!ns.branches.length || !ns.categories.length || !ns.leadSources.length || !ns.leadServices.length)
+      return toast("Each list needs at least one line (teams can be empty)", true);
     try { await store.saveSettings(ns); S.settings = ns; toast("Settings saved"); } catch (er) { toast(errMsg(er), true); }
   };
 }
@@ -591,4 +621,182 @@ function noteModal(t) {
   modal("Admin comment", `<div class="task-sum"><b>${esc(t.title)}</b><span class="muted sm">${esc(t.userName)} · ${esc(t.branch)}</span></div>
     <label>Comment (visible to ${esc(t.userName)})<textarea name="c" rows="3" maxlength="500">${esc(t.adminComment)}</textarea></label>`,
   async (f) => { const p = { adminComment: f.c.trim() }; await store.updateTask(t.id, p); Object.assign(t, p); toast("Comment saved"); renderView(); });
+}
+
+// ---------------------------------------------------------------- leads (admin + staff)
+const PALETTE = ["#0F72BA", "#21B573", "#E0A526", "#8E5CC4", "#D64545", "#09A79C", "#E07A26", "#5B6B7D", "#C2408E", "#7FA83A", "#3A8FD9", "#9C7B4A"];
+const sum = (arr) => arr.reduce((a, l) => a + (Number(l.count) || 0), 0);
+
+function filteredLeads() {
+  const [from, to] = range();
+  return S.leads.filter((l) => l.date >= from && l.date <= to
+    && (!S.f.branch || l.branch === S.f.branch) && (!S.f.team || l.team === S.f.team) && (!S.f.uid || l.uid === S.f.uid)
+    && (!S.f.source || l.source === S.f.source) && (!S.f.service || l.service === S.f.service));
+}
+function totalsBy(list, key) {
+  const g = groupBy(list, (l) => l[key] || "—");
+  return Object.entries(g).map(([k, v]) => [k, sum(v)]).sort((a, b) => b[1] - a[1]);
+}
+
+function viewLeads() {
+  const admin = isAdmin();
+  const list = filteredLeads();
+  const total = sum(list);
+  const [from, to] = range();
+  const days = Math.round((new Date(to) - new Date(from)) / 864e5) + 1;
+  const elapsed = Math.max(1, Math.min(days, Math.round((new Date(today()) - new Date(from)) / 864e5) + 1));
+  const bySource = totalsBy(list, "source"), byService = totalsBy(list, "service");
+  const people = new Set(list.map((l) => l.uid)).size;
+  const k = (label, val, sub = "", cls = "") => `<div class="kpi ${cls}"><span>${label}</span><b>${val}</b>${sub ? `<small>${esc(sub)}</small>` : ""}</div>`;
+  $("#main").innerHTML = `
+    <div class="page-head"><h2>${admin ? "Leads Report" : "My Leads"}</h2>
+      <div class="actions no-print"><button class="btn primary" id="addLead">+ Add leads</button>
+      <button class="btn" id="csv">Export CSV</button><button class="btn" onclick="print()">Print / PDF</button></div></div>
+    <div class="print-only print-head">${logo}<div><h2>Leads Report${admin ? "" : " — " + esc(S.profile.name)}</h2><p>${fmt(from)} – ${fmt(to)}${S.f.branch ? " · " + esc(S.f.branch) : ""}</p></div></div>
+    ${filterBar({ leads: true })}
+    <div class="kpis">
+      ${k("Total leads", total.toLocaleString("en-IN"), "", "good")}
+      ${k("Average per day", (total / (to < today() ? days : elapsed)).toFixed(1))}
+      ${k("Top source", bySource[0] ? bySource[0][1] : 0, bySource[0]?.[0] || "—")}
+      ${k("Top service", byService[0] ? byService[0][1] : 0, byService[0]?.[0] || "—")}
+      ${k(admin ? "People reporting" : "Days reported", admin ? people : new Set(list.map((l) => l.date)).size)}
+      ${k("Entries", list.length)}
+    </div>
+    <div class="grid2">
+      <section class="card"><h3>Leads by source</h3><div class="chart" style="height:${Math.max(220, bySource.length * 30 + 50)}px"><canvas id="lSource"></canvas></div></section>
+      <section class="card"><h3>Leads by service</h3><div class="chart" style="height:${Math.max(220, byService.length * 30 + 50)}px"><canvas id="lService"></canvas></div></section>
+      <section class="card ${admin ? "" : "span2"}"><h3>Leads over time</h3><div class="chart"><canvas id="lTrend"></canvas></div></section>
+      ${admin ? `<section class="card"><h3>Location-wise leads by source</h3><div class="chart" style="height:${Math.max(240, new Set(list.map((l) => l.branch)).size * 38 + 90)}px"><canvas id="lBranch"></canvas></div></section>` : ""}
+    </div>
+    ${admin ? `<section class="card"><h3>Location-wise leads (by source)</h3>${matrixTable(list, "branch", "Location")}</section>
+    <section class="card"><h3>Person-wise leads</h3>${personLeadsTable(list)}</section>` : ""}
+    <section class="card"><h3>${admin ? "All entries" : "My entries"} <small class="muted">${list.length}</small></h3>${leadEntries(list, admin)}</section>`;
+  bindFilters();
+  $("#addLead").onclick = () => leadModal(null);
+  if ($("#moreLeads")) $("#moreLeads").onclick = () => { S.showAllLeads = true; renderView(); };
+  $("#csv").onclick = () => exportLeadsCSV(list);
+  $$("[data-ledit]").forEach((b) => (b.onclick = () => leadModal(S.leads.find((l) => l.id === b.dataset.ledit))));
+  $$("[data-ldel]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Delete this lead entry?")) return;
+    try { await store.deleteLead(b.dataset.ldel); S.leads = S.leads.filter((l) => l.id !== b.dataset.ldel); renderView(); toast("Deleted"); }
+    catch (e) { toast(errMsg(e), true); }
+  }));
+  $$("[data-lbranch]").forEach((r) => (r.onclick = () => { S.f.branch = r.dataset.lbranch; S.f.uid = ""; renderView(); }));
+  $$("[data-lperson]").forEach((r) => (r.onclick = () => { S.f.uid = r.dataset.lperson; renderView(); }));
+  const hbar = (id, rows, color) => chart(id, { type: "bar", data: { labels: rows.map((r) => r[0]),
+    datasets: [{ label: "Leads", data: rows.map((r) => r[1]), backgroundColor: color, borderRadius: 3 }] },
+    options: { ...baseOpts(true, false), plugins: { legend: { display: false } } } });
+  hbar("lSource", bySource, C.pending);
+  hbar("lService", byService, C.done);
+  // trend: daily up to 62 days, weekly beyond
+  const daily = days <= 62;
+  const buckets = [];
+  for (let d = daily ? from : weekStart(from); d <= to; d = addDays(d, daily ? 1 : 7)) buckets.push(d);
+  const tv = buckets.map((b) => sum(list.filter((l) => l.date >= b && l.date <= (daily ? b : addDays(b, 6)))));
+  chart("lTrend", { type: "bar", data: { labels: buckets.map(fmtShort),
+    datasets: [{ label: daily ? "Leads per day" : "Leads per week", data: tv, backgroundColor: C.pending, borderRadius: 3 }] },
+    options: { ...baseOpts(false, false), plugins: { legend: { display: false } } } });
+  if (admin) {
+    const branches = totalsBy(list, "branch").map((r) => r[0]);
+    const srcs = bySource.map((r) => r[0]);
+    chart("lBranch", { type: "bar", data: { labels: branches, datasets: srcs.map((src, i) => ({
+      label: src, backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 2,
+      data: branches.map((b) => sum(list.filter((l) => l.branch === b && l.source === src))) })) },
+      options: baseOpts(true, true) });
+  }
+}
+
+function matrixTable(list, key, label) {
+  if (!list.length) return `<p class="empty">No leads in this period.</p>`;
+  const cols = totalsBy(list, "source").map((r) => r[0]);
+  const rows = totalsBy(list, key);
+  return `<div class="table-wrap"><table class="tbl matrix"><thead><tr><th>${label}</th>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}<th>Total</th></tr></thead><tbody>
+    ${rows.map(([r, t]) => `<tr class="click" data-lbranch="${esc(r)}"><td><b>${esc(r)}</b></td>${cols.map((c) => {
+      const v = sum(list.filter((l) => l[key] === r && l.source === c)); return `<td>${v || "·"}</td>`; }).join("")}<td><b>${t}</b></td></tr>`).join("")}
+    <tr class="total"><td><b>Total</b></td>${cols.map((c) => `<td><b>${sum(list.filter((l) => l.source === c))}</b></td>`).join("")}<td><b>${sum(list)}</b></td></tr>
+    </tbody></table></div>`;
+}
+
+function personLeadsTable(list) {
+  const g = groupBy(list, (l) => l.uid);
+  S.users.filter((u) => u.role !== "admin" && u.active && (!S.f.branch || u.branch === S.f.branch)
+    && (!S.f.team || u.team === S.f.team) && (!S.f.uid || u.uid === S.f.uid)).forEach((u) => (g[u.uid] ||= []));
+  const rows = Object.entries(g).map(([uid, ls]) => {
+    const u = S.users.find((x) => x.uid === uid) || {};
+    return { uid, name: u.name || ls[0]?.userName || "?", branch: u.branch || ls[0]?.branch, team: u.team || ls[0]?.team,
+      total: sum(ls), days: new Set(ls.map((l) => l.date)).size, src: totalsBy(ls, "source")[0], svc: totalsBy(ls, "service")[0] };
+  }).sort((a, b) => b.total - a.total);
+  if (!rows.length) return `<p class="empty">No staff match these filters.</p>`;
+  return `<div class="table-wrap"><table class="tbl"><thead><tr><th>Person</th><th>Location</th><th>Team</th><th>Total leads</th><th>Days reported</th><th>Top source</th><th>Top service</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr class="click" data-lperson="${esc(r.uid)}"><td><b>${esc(r.name)}</b></td><td>${esc(r.branch)}</td><td>${esc(r.team)}</td>
+      <td><b>${r.total}</b></td><td class="${r.days ? "" : "red"}">${r.days}</td><td>${r.src ? `${esc(r.src[0])} <span class="muted">(${r.src[1]})</span>` : "—"}</td>
+      <td>${r.svc ? `${esc(r.svc[0])} <span class="muted">(${r.svc[1]})</span>` : "—"}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function leadEntries(list, admin) {
+  if (!list.length) return `<p class="empty">No lead entries yet. Click “+ Add leads”.</p>`;
+  const rows = [...list].sort((a, b) => b.date.localeCompare(a.date) || (a.userName || "").localeCompare(b.userName || ""));
+  return `<div class="table-wrap"><table class="tbl"><thead><tr><th>Date</th>${admin ? "<th>Person</th><th>Location</th>" : ""}<th>Lead source</th><th>Service</th><th>Leads</th><th class="no-print"></th></tr></thead><tbody>
+    ${rows.slice(0, S.showAllLeads ? 1000 : 25).map((l) => `<tr><td class="nowrap">${fmt(l.date)}</td>${admin ? `<td>${esc(l.userName)}</td><td>${esc(l.branch)}</td>` : ""}
+      <td>${esc(l.source)}</td><td>${esc(l.service)}</td><td><b>${l.count}</b></td>
+      <td class="no-print nowrap"><button class="btn sm" data-ledit="${l.id}">Edit</button> <button class="btn sm ghost" data-ldel="${l.id}" title="Delete">✕</button></td></tr>`).join("")}
+    </tbody></table></div>${rows.length > 25 && !S.showAllLeads ? `<p class="no-print"><button class="link" id="moreLeads">Show all ${rows.length} entries</button></p>`
+      : rows.length > 1000 ? `<p class="muted sm">Showing latest 1000 of ${rows.length}. Export CSV for all.</p>` : ""}`;
+}
+
+function exportLeadsCSV(list) {
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const head = ["Date", "Person", "Location", "Team", "Lead source", "Service", "Leads"];
+  const csv = [head.map(q).join(","), ...list.sort((a, b) => a.date.localeCompare(b.date))
+    .map((l) => [l.date, l.userName, l.branch, l.team, l.source, l.service, l.count].map(q).join(","))].join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" }));
+  const [f, t] = range();
+  a.download = `renewplus-leads_${f}_to_${t}.csv`;
+  a.click();
+}
+
+// Add (several rows at once) or edit one lead entry
+function leadModal(entry) {
+  const s = S.settings, admin = isAdmin();
+  const staff = S.users.filter((u) => u.role !== "admin" && u.active).sort((a, b) => a.name.localeCompare(b.name)).map((u) => [u.uid, `${u.name} — ${u.branch}`]);
+  let n = 0;
+  const row = (r = {}) => { const i = n++; return `<div class="lead-row">
+    <select name="source_${i}" required aria-label="Lead source">${opts(s.leadSources, r.source, "Lead source")}</select>
+    <select name="service_${i}" required aria-label="Service">${opts(s.leadServices, r.service, "Service")}</select>
+    <input type="number" name="count_${i}" min="0" step="1" required placeholder="Leads" aria-label="Number of leads" value="${esc(r.count ?? "")}">
+    ${entry ? "" : `<button type="button" class="btn sm ghost rm" title="Remove row">✕</button>`}</div>`; };
+  const form = modal(entry ? "Edit lead entry" : "Add leads", `
+    ${admin && !entry ? `<label>Person<select name="uid" required>${opts(staff, S.f.uid, "Select person")}</select></label>` : ""}
+    <label>Date<input type="date" name="date" required max="${today()}" value="${esc(entry?.date || today())}"></label>
+    <div><div class="lead-head"><span>Lead source</span><span>Service</span><span>Leads</span></div>
+    <div id="leadRows">${entry ? row(entry) : row() + row()}</div>
+    ${entry ? "" : `<button type="button" class="link" id="addRow">+ Add another row</button>`}</div>
+    <p class="muted sm">Add one row per source + service combination for this day.</p>`,
+  async (f, el) => {
+    const rows = $$(".lead-row", el).map((r) => {
+      const [src, svc, cnt] = $$("select,input", r);
+      return { source: src.value, service: svc.value, count: parseInt(cnt.value, 10) || 0 };
+    }).filter((r) => r.source && r.service);
+    if (!rows.length) throw new Error("Add at least one row");
+    const now = new Date().toISOString();
+    if (entry) {
+      const patch = { date: f.date, ...rows[0], updatedAt: now };
+      await store.updateLead(entry.id, patch); Object.assign(entry, patch); toast("Lead entry updated");
+    } else {
+      const who = admin ? S.users.find((u) => u.uid === f.uid) : S.profile;
+      for (const r of rows) {
+        const l = { uid: who.uid, userName: who.name, branch: who.branch, team: who.team || "", date: f.date, ...r,
+          createdBy: S.user.uid, createdAt: now, updatedAt: now };
+        l.id = await store.addLead(l);
+        S.leads.push(l);
+      }
+      toast(`${sum(rows)} leads saved`);
+    }
+    renderView();
+  }, entry ? "Save" : "Save leads");
+  const bindRm = () => $$(".rm", form).forEach((b) => (b.onclick = () => { if ($$(".lead-row", form).length > 1) b.parentElement.remove(); }));
+  bindRm();
+  if ($("#addRow", form)) $("#addRow", form).onclick = () => { $("#leadRows", form).insertAdjacentHTML("beforeend", row()); bindRm(); };
 }

@@ -65,6 +65,18 @@ export async function createUser({ name, email, password, role, branch, team }) 
 
 export const updateUser = (uid, patch) => updateDoc(doc(db, "users", uid), patch);
 
+// Removes the profile (access is blocked without it) and optionally their tasks.
+// The Firebase login itself can only be removed in the Firebase console.
+export async function deleteUser(uid, withTasks) {
+  if (withTasks) {
+    const s = await getDocs(query(collection(db, "tasks"), where("uid", "==", uid)));
+    await Promise.all(s.docs.map((d) => deleteDoc(d.ref)));
+    const l = await getDocs(query(collection(db, "leads"), where("uid", "==", uid)));
+    await Promise.all(l.docs.map((d) => deleteDoc(d.ref)));
+  }
+  await deleteDoc(doc(db, "users", uid));
+}
+
 export async function getSettings() {
   const s = await getDoc(doc(db, "settings", "config"));
   return s.exists() ? { ...cfg.DEFAULT_SETTINGS, ...s.data() } : { ...cfg.DEFAULT_SETTINGS };
@@ -87,3 +99,19 @@ export async function addTask(t) {
 }
 export const updateTask = (id, patch) => updateDoc(doc(db, "tasks", id), patch);
 export const deleteTask = (id) => deleteDoc(doc(db, "tasks", id));
+
+// ---- leads
+export async function listLeads({ uid, from, to }) {
+  let q;
+  if (uid) q = query(collection(db, "leads"), where("uid", "==", uid));
+  else q = query(collection(db, "leads"), where("date", ">=", from), where("date", "<=", to));
+  const s = await getDocs(q);
+  return s.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+export async function addLead(l) {
+  const { id, ...data } = l;
+  const r = await addDoc(collection(db, "leads"), data);
+  return r.id;
+}
+export const updateLead = (id, patch) => updateDoc(doc(db, "leads", id), patch);
+export const deleteLead = (id) => deleteDoc(doc(db, "leads", id));

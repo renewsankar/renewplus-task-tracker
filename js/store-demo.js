@@ -77,7 +77,32 @@ function seed() {
       }
     }
   });
-  return { users, settings, tasks };
+  return { users, settings, tasks, leads: seedLeads(users) };
+}
+
+function seedLeads(users) {
+  const r = rng(7);
+  const sources = ["Meta Ads (FB / Instagram)", "Google Ads", "Instagram Organic", "Google Business Profile", "Website / SEO", "WhatsApp", "Referral"];
+  const weight = [10, 7, 4, 3, 3, 2, 1];
+  const services = ["Hair Transplant", "Hair Fall / PRP / GFC", "Dandruff / Scalp", "Acne & Scars", "Pigmentation", "Laser Hair Removal", "Anti-ageing"];
+  const leads = [];
+  const t0 = iso(new Date());
+  let id = 1;
+  users.filter((u) => u.role === "staff" && ["Performance Ads", "Social Media", "SEO"].includes(u.team)).forEach((u) => {
+    for (let d = -60; d <= 0; d++) {
+      const date = addDays(t0, d);
+      if (r() < 0.15) continue;
+      const k = 1 + Math.floor(r() * 3);
+      for (let j = 0; j < k; j++) {
+        const si = Math.floor(r() * sources.length);
+        const count = Math.max(1, Math.round(r() * weight[si] * (u.team === "Performance Ads" ? 1.6 : 0.8)));
+        leads.push({ id: "l" + id++, uid: u.uid, userName: u.name, branch: u.branch, team: u.team, date,
+          source: sources[si], service: services[Math.floor(r() * r() * services.length)], count,
+          createdBy: u.uid, createdAt: date + "T19:00:00", updatedAt: date + "T19:00:00" });
+      }
+    }
+  });
+  return leads;
 }
 
 function load() {
@@ -90,6 +115,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 export function init(config) {
   cfg = config;
   db = load() || seed();
+  if (!db.leads) db.leads = seedLeads(db.users);
   save();
   try { const c = sessionStorage.getItem(KEY + "-me"); if (c) current = JSON.parse(c); } catch (e) { /* ignore */ }
 }
@@ -123,6 +149,11 @@ export async function createUser({ name, email, role, branch, team }) {
   db.users.push(u); save(); return clone(u);
 }
 export async function updateUser(uid, patch) { Object.assign(db.users.find((u) => u.uid === uid), patch); save(); }
+export async function deleteUser(uid, withTasks) {
+  db.users = db.users.filter((u) => u.uid !== uid);
+  if (withTasks) { db.tasks = db.tasks.filter((t) => t.uid !== uid); db.leads = db.leads.filter((l) => l.uid !== uid); }
+  save();
+}
 export async function getSettings() { return clone(db.settings); }
 export async function saveSettings(s) { db.settings = clone(s); save(); }
 
@@ -134,3 +165,12 @@ export async function listTasks({ uid, from, to }) {
 export async function addTask(t) { const id = "t" + Date.now(); db.tasks.push({ ...t, id }); save(); return id; }
 export async function updateTask(id, patch) { Object.assign(db.tasks.find((t) => t.id === id), patch); save(); }
 export async function deleteTask(id) { db.tasks = db.tasks.filter((t) => t.id !== id); save(); }
+
+export async function listLeads({ uid, from, to }) {
+  if (uid) return clone(db.leads.filter((l) => l.uid === uid));
+  if (!isAdmin()) throw new Error("Permission denied");
+  return clone(db.leads.filter((l) => l.date >= from && l.date <= to));
+}
+export async function addLead(l) { const id = "l" + Date.now() + Math.floor(Math.random() * 1000); db.leads.push({ ...l, id }); save(); return id; }
+export async function updateLead(id, patch) { Object.assign(db.leads.find((l) => l.id === id), patch); save(); }
+export async function deleteLead(id) { db.leads = db.leads.filter((l) => l.id !== id); save(); }

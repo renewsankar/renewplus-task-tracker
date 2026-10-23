@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// Renew+ Marketing Task Tracker — Firestore security rules
+// Staff can ONLY read/write their own tasks. Admins can see everything.
+// Paste this into Firebase Console → Firestore Database → Rules → Publish.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // First admin(s). Must match BOOTSTRAP_ADMINS in js/config.js.
+    function bootstrapEmails() { return ['sankar@renewgroups.com']; }
+
+    function signedIn()   { return request.auth != null; }
+    function profilePath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function hasProfile() { return signedIn() && exists(profilePath()); }
+    function me()         { return get(profilePath()).data; }
+    function isActive()   { return hasProfile() && me().active == true; }
+    function isAdmin()    { return isActive() && me().role == 'admin'; }
+    function isBootstrap() {
+      return signedIn() && request.auth.token.email != null
+        && request.auth.token.email.lower() in bootstrapEmails();
+    }
+
+    match /users/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow create: if isAdmin() || (isBootstrap() && request.auth.uid == uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /settings/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || isBootstrap();
+    }
+
+    match /tasks/{taskId} {
+      // Staff: only their own tasks
+      allow read: if isAdmin()
+        || (isActive() && resource.data.uid == request.auth.uid);
+
+      // Staff can commit tasks for themselves, in their own branch only
+      allow create: if isAdmin()
+        || (isActive()
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.branch == me().branch
+            && request.resource.data.status == 'Committed'
+            && request.resource.data.adminComment == '');
+
+      // Staff can only report progress; task, due date, owner and admin comment are locked
+      allow update: if isAdmin()
+        || (isActive()
+            && resource.data.uid == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'progress', 'achieved', 'proofLink', 'remarks',
+                           'completedOn', 'updatedAt', 'updates']));
+
+      // Staff can withdraw a commitment only before starting it
+      allow delete: if isAdmin()
+        || (isActive() && resource.data.uid == request.auth.uid
+            && resource.data.status == 'Committed');
+    }
+  }
+}

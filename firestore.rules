@@ -58,5 +58,26 @@ service cloud.firestore {
         || (isActive() && resource.data.uid == request.auth.uid
             && resource.data.status == 'Committed');
     }
+
+    match /leads/{leadId} {
+      // Staff: only their own lead entries
+      allow read: if isAdmin()
+        || (isActive() && resource.data.uid == request.auth.uid);
+      allow create: if isAdmin()
+        || (isActive()
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.branch == me().branch
+            && request.resource.data.count is int
+            && request.resource.data.count >= 0);
+      allow update: if isAdmin()
+        || (isActive()
+            && resource.data.uid == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['date', 'source', 'service', 'count', 'updatedAt'])
+            && request.resource.data.count is int
+            && request.resource.data.count >= 0);
+      allow delete: if isAdmin()
+        || (isActive() && resource.data.uid == request.auth.uid);
+    }
   }
 }

@@ -32,6 +32,12 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    // Current password of each person, so the admin can set a new one from the People page.
+    // Admins only — nobody else can read or write these records.
+    match /credentials/{uid} {
+      allow read, write: if isAdmin();
+    }
+
     match /settings/{docId} {
       allow read: if signedIn();
       allow write: if isAdmin() || isBootstrap();

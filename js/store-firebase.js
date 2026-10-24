@@ -38,8 +38,8 @@ export async function ensureBootstrap(user) {
   const email = (user.email || "").toLowerCase();
   if (!cfg.BOOTSTRAP_ADMINS.map((e) => e.toLowerCase()).includes(email)) return null;
   const p = {
-    name: email.split("@")[0], email, role: "admin", branch: "Head Office",
-    team: "", active: true, createdAt: new Date().toISOString(),
+    name: email.split("@")[0], email, role: "admin", branches: [], branch: "",
+    active: true, createdAt: new Date().toISOString(),
   };
   await setDoc(doc(db, "users", user.uid), p);
   const st = await getDoc(doc(db, "settings", "config"));
@@ -53,26 +53,29 @@ export async function listUsers() {
 }
 
 // Creates the login with a secondary app instance so the admin stays signed in.
-export async function createUser({ name, email, password, role, branch, team }) {
+export async function createUser({ name, email, password, role, branches }) {
   const sec = initializeApp(cfg.firebaseConfig, "secondary-" + Date.now());
   const secAuth = getAuth(sec);
   const cred = await createUserWithEmailAndPassword(secAuth, email, password);
   await fbSignOut(secAuth);
-  const p = { name, email: email.toLowerCase(), role, branch, team, active: true, createdAt: new Date().toISOString() };
+  const p = {
+    name, email: email.toLowerCase(), role, branches, branch: branches[0] || "",
+    active: true, createdAt: new Date().toISOString(),
+  };
   await setDoc(doc(db, "users", cred.user.uid), p);
   return { uid: cred.user.uid, ...p };
 }
 
 export const updateUser = (uid, patch) => updateDoc(doc(db, "users", uid), patch);
 
-// Removes the profile (access is blocked without it) and optionally their tasks.
+// Removes the profile (access is blocked without it) and optionally their tasks + leads.
 // The Firebase login itself can only be removed in the Firebase console.
 export async function deleteUser(uid, withTasks) {
   if (withTasks) {
-    const s = await getDocs(query(collection(db, "tasks"), where("uid", "==", uid)));
-    await Promise.all(s.docs.map((d) => deleteDoc(d.ref)));
-    const l = await getDocs(query(collection(db, "leads"), where("uid", "==", uid)));
-    await Promise.all(l.docs.map((d) => deleteDoc(d.ref)));
+    for (const c of ["tasks", "leads"]) {
+      const s = await getDocs(query(collection(db, c), where("uid", "==", uid)));
+      await Promise.all(s.docs.map((d) => deleteDoc(d.ref)));
+    }
   }
   await deleteDoc(doc(db, "users", uid));
 }
@@ -84,7 +87,7 @@ export async function getSettings() {
 export const saveSettings = (s) => setDoc(doc(db, "settings", "config"), s);
 
 // Staff: always query by own uid (required by security rules).
-// Admin: query by due-date range.
+// Admin: query by date range.
 export async function listTasks({ uid, from, to }) {
   let q;
   if (uid) q = query(collection(db, "tasks"), where("uid", "==", uid));
@@ -92,20 +95,26 @@ export async function listTasks({ uid, from, to }) {
   const s = await getDocs(q);
   return s.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
-
 export async function addTask(t) {
-  const r = await addDoc(collection(db, "tasks"), t);
+  const { id, ...data } = t;
+  const r = await addDoc(collection(db, "tasks"), data);
   return r.id;
 }
 export const updateTask = (id, patch) => updateDoc(doc(db, "tasks", id), patch);
 export const deleteTask = (id) => deleteDoc(doc(db, "tasks", id));
 
 // ---- leads
-export async function listLeads({ uid, from, to }) {
-  let q;
-  if (uid) q = query(collection(db, "leads"), where("uid", "==", uid));
-  else q = query(collection(db, "leads"), where("date", ">=", from), where("date", "<=", to));
-  const s = await getDocs(q);
+// Staff: their own entries + every entry at their locations (so location CPL is complete).
+export async function listLeads({ uid, branches, from, to }) {
+  if (uid) {
+    const qs = [query(collection(db, "leads"), where("uid", "==", uid)),
+      ...(branches || []).map((b) => query(collection(db, "leads"), where("branch", "==", b)))];
+    const snaps = await Promise.all(qs.map((q) => getDocs(q)));
+    const byId = new Map();
+    snaps.forEach((s) => s.docs.forEach((d) => byId.set(d.id, { id: d.id, ...d.data() })));
+    return [...byId.values()];
+  }
+  const s = await getDocs(query(collection(db, "leads"), where("date", ">=", from), where("date", "<=", to)));
   return s.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 export async function addLead(l) {
@@ -115,3 +124,20 @@ export async function addLead(l) {
 }
 export const updateLead = (id, patch) => updateDoc(doc(db, "leads", id), patch);
 export const deleteLead = (id) => deleteDoc(doc(db, "leads", id));
+
+// ---- monthly budgets (one doc per month + location + paid channel)
+// Staff: one query per assigned location (required by security rules).
+// Admin: query by month range ("YYYY-MM").
+export async function listBudgets({ branches, from, to }) {
+  if (branches) {
+    const all = await Promise.all(branches.map((b) =>
+      getDocs(query(collection(db, "budgets"), where("branch", "==", b)))));
+    return all.flatMap((s) => s.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }
+  const s = await getDocs(query(collection(db, "budgets"), where("month", ">=", from), where("month", "<=", to)));
+  return s.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+export async function saveBudget(b) {
+  const { id, ...data } = b;
+  await setDoc(doc(db, "budgets", id), data, { merge: true });
+}

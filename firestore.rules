@@ -1,7 +1,10 @@
 rules_version = '2';
 
-// Renew+ Marketing Task Tracker — Firestore security rules
-// Staff can ONLY read/write their own tasks. Admins can see everything.
+// Renew+ Marketing Task Tracker — Firestore security rules (v3: locations, budgets, CPL)
+// - Responsible persons (staff) read/write ONLY their own tasks. They add/edit only their
+//   own lead entries, and can read lead counts at their locations (for location CPL).
+// - They can read and edit the monthly budget of their own locations.
+// - Admins can see and change everything.
 // Paste this into Firebase Console → Firestore Database → Rules → Publish.
 
 service cloud.firestore {
@@ -10,12 +13,14 @@ service cloud.firestore {
     // First admin(s). Must match BOOTSTRAP_ADMINS in js/config.js.
     function bootstrapEmails() { return ['sankar@renewgroups.com']; }
 
-    function signedIn()   { return request.auth != null; }
+    function signedIn()    { return request.auth != null; }
     function profilePath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
-    function hasProfile() { return signedIn() && exists(profilePath()); }
-    function me()         { return get(profilePath()).data; }
-    function isActive()   { return hasProfile() && me().active == true; }
-    function isAdmin()    { return isActive() && me().role == 'admin'; }
+    function hasProfile()  { return signedIn() && exists(profilePath()); }
+    function me()          { return get(profilePath()).data; }
+    function isActive()    { return hasProfile() && me().get('active', true) == true; }
+    function isAdmin()     { return isActive() && me().role == 'admin'; }
+    // Locations handled by the signed-in person (older profiles had a single "branch")
+    function myBranches()  { return me().get('branches', [me().get('branch', '')]); }
     function isBootstrap() {
       return signedIn() && request.auth.token.email != null
         && request.auth.token.email.lower() in bootstrapEmails();
@@ -33,19 +38,18 @@ service cloud.firestore {
     }
 
     match /tasks/{taskId} {
-      // Staff: only their own tasks
       allow read: if isAdmin()
         || (isActive() && resource.data.uid == request.auth.uid);
 
-      // Staff can commit tasks for themselves, in their own branch only
+      // Commit a task for yourself, at one of your locations
       allow create: if isAdmin()
         || (isActive()
             && request.resource.data.uid == request.auth.uid
-            && request.resource.data.branch == me().branch
+            && request.resource.data.branch in myBranches()
             && request.resource.data.status == 'Committed'
             && request.resource.data.adminComment == '');
 
-      // Staff can only report progress; task, due date, owner and admin comment are locked
+      // Staff can only report progress; task, location, due date, owner and admin comment are locked
       allow update: if isAdmin()
         || (isActive()
             && resource.data.uid == request.auth.uid
@@ -60,24 +64,46 @@ service cloud.firestore {
     }
 
     match /leads/{leadId} {
-      // Staff: only their own lead entries
+      // Own entries, plus all entries at your locations (needed for correct location CPL)
       allow read: if isAdmin()
-        || (isActive() && resource.data.uid == request.auth.uid);
+        || (isActive() && (resource.data.uid == request.auth.uid
+                           || resource.data.branch in myBranches()));
       allow create: if isAdmin()
         || (isActive()
             && request.resource.data.uid == request.auth.uid
-            && request.resource.data.branch == me().branch
+            && request.resource.data.branch in myBranches()
             && request.resource.data.count is int
             && request.resource.data.count >= 0);
       allow update: if isAdmin()
         || (isActive()
             && resource.data.uid == request.auth.uid
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['date', 'source', 'service', 'count', 'updatedAt'])
+                 .hasOnly(['date', 'branch', 'source', 'service', 'count', 'updatedAt'])
+            && request.resource.data.branch in myBranches()
             && request.resource.data.count is int
             && request.resource.data.count >= 0);
       allow delete: if isAdmin()
         || (isActive() && resource.data.uid == request.auth.uid);
+    }
+
+    // Monthly budget per location + paid channel (required budget and amount spent)
+    match /budgets/{budgetId} {
+      allow read: if isAdmin()
+        || (isActive() && resource.data.branch in myBranches());
+      allow create: if isAdmin()
+        || (isActive()
+            && request.resource.data.branch in myBranches()
+            && request.resource.data.required is number && request.resource.data.required >= 0
+            && request.resource.data.spent is number && request.resource.data.spent >= 0);
+      allow update: if isAdmin()
+        || (isActive()
+            && resource.data.branch in myBranches()
+            && request.resource.data.branch == resource.data.branch
+            && request.resource.data.month == resource.data.month
+            && request.resource.data.source == resource.data.source
+            && request.resource.data.required is number && request.resource.data.required >= 0
+            && request.resource.data.spent is number && request.resource.data.spent >= 0);
+      allow delete: if isAdmin();
     }
   }
 }

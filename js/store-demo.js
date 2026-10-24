@@ -165,10 +165,10 @@ const isAdmin = () => me()?.role === "admin";
 const myBranches = () => me()?.branches || [];
 
 export async function listUsers() { if (!isAdmin()) throw new Error("Permission denied"); return clone(db.users); }
-export async function createUser({ name, email, role, branches }) {
+export async function createUser({ name, email, password, role, branches }) {
   if (db.users.some((u) => u.email === email.toLowerCase())) throw new Error("Email already exists.");
   const u = { uid: "u" + Date.now(), name, email: email.toLowerCase(), role, branches, branch: branches[0] || "", active: true };
-  db.users.push(u); save(); return clone(u);
+  db.users.push(u); (db.credentials ||= {})[u.uid] = { email: u.email, password }; save(); return clone(u);
 }
 export async function updateUser(uid, patch) { Object.assign(db.users.find((u) => u.uid === uid), patch); save(); }
 export async function deleteUser(uid, withTasks) {
@@ -209,5 +209,15 @@ export async function saveBudget(b) {
   if (!isAdmin() && !myBranches().includes(b.branch)) throw new Error("Permission denied");
   const i = db.budgets.findIndex((x) => x.id === b.id);
   if (i >= 0) Object.assign(db.budgets[i], b); else db.budgets.push({ ...b });
+  save();
+}
+
+export async function getCredential(uid) { if (!isAdmin()) throw new Error("Permission denied"); return (db.credentials || {})[uid] || null; }
+export async function setPassword(user, newPassword, currentPassword) {
+  if (!isAdmin()) throw new Error("Permission denied");
+  const saved = (db.credentials || {})[user.uid];
+  if (!currentPassword && !saved) throw new Error("NO_CURRENT");
+  if (saved && currentPassword && currentPassword !== saved.password) throw new Error("WRONG_CURRENT");
+  (db.credentials ||= {})[user.uid] = { email: user.email, password: newPassword };
   save();
 }

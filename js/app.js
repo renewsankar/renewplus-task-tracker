@@ -888,15 +888,13 @@ function viewPeople() {
       <td>${u.role === "admin" ? `<span class="muted">All</span>` : branchesOf(u).map((b) => `<span class="loc-chip sm">${esc(b)}</span>`).join(" ") || `<span class="red">None</span>`}</td>
       <td>${u.active !== false ? "Active" : "Inactive"}</td>
       <td class="nowrap"><button class="btn sm" data-u="${u.uid}">Edit</button>
-      ${DEMO ? "" : `<button class="btn sm" data-reset="${esc(u.email)}">Reset password</button>`}
+      ${u.uid !== S.user.uid ? `<button class="btn sm" data-pw="${u.uid}">Set password</button>` : ""}
       ${u.uid !== S.user.uid ? `<button class="btn sm ghost" data-act="${u.uid}">${u.active !== false ? "Deactivate" : "Activate"}</button> <button class="btn sm danger" data-delu="${u.uid}">Delete</button>` : ""}</td></tr>`).join("")}
     </tbody></table></div></section>
     <p class="muted sm">Each responsible person can handle one or more locations. They see only their own tasks; for their locations they also see the budget and lead totals (for CPL). <b>Delete</b> removes a person for good; <b>Deactivate</b> blocks access but keeps them in reports.</p>`;
   $("#add").onclick = () => userModal(null);
   $$("[data-u]").forEach((b) => (b.onclick = () => userModal(S.users.find((u) => u.uid === b.dataset.u))));
-  $$("[data-reset]").forEach((b) => (b.onclick = async () => {
-    try { await store.resetPassword(b.dataset.reset); toast("Reset email sent to " + b.dataset.reset); } catch (e) { toast(errMsg(e), true); }
-  }));
+  $$("[data-pw]").forEach((b) => (b.onclick = () => passwordModal(S.users.find((x) => x.uid === b.dataset.pw))));
   $$("[data-act]").forEach((b) => (b.onclick = async () => {
     const u = S.users.find((x) => x.uid === b.dataset.act);
     const active = u.active === false;
@@ -919,7 +917,10 @@ function userModal(u) {
     if (f.role !== "admin" && !branches.length) throw new Error("Tick at least one location");
     const data = { name: f.name.trim(), role: f.role, branches, branch: branches[0] || "" };
     if (u) { await store.updateUser(u.uid, data); Object.assign(u, data); toast("Saved"); }
-    else { const nu = await store.createUser({ ...data, email: f.email.trim(), password: f.password }); S.users.push(nu); toast(`${nu.name} added. Share the login details with them.`); }
+    else {
+      const nu = await store.createUser({ ...data, email: f.email.trim(), password: f.password }); S.users.push(nu);
+      renderView(); setTimeout(() => shareLoginModal(nu, f.password, true), 50); return;
+    }
     renderView();
   });
 }
@@ -1126,4 +1127,58 @@ function leadModal(entry) {
   bindRm();
   if ($("#addRow", form)) $("#addRow", form).onclick = () => { $("#leadRows", form).insertAdjacentHTML("beforeend", row()); bindRm(); };
   personLocBinding(form);
+}
+
+// ================================================================ admin: set a person's password
+const genPassword = () => {
+  const c = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const r = crypto.getRandomValues(new Uint32Array(6));
+  return "Renew@" + [...r].map((n) => c[n % c.length]).join("");
+};
+async function passwordModal(u) {
+  let saved = null;
+  try { saved = await store.getCredential(u.uid); } catch (e) { /* treated as not saved */ }
+  const form = modal(`Set password — ${esc(u.name)}`, `
+    <div class="task-sum"><b>${esc(u.name)}</b><span class="muted sm">${esc(u.email)}</span></div>
+    <label>New password<div class="pw-row"><input name="pw" required minlength="6" value="${genPassword()}" autocomplete="off">
+      <button type="button" class="btn sm" id="gen">Generate</button></div>
+      <small class="muted">At least 6 characters. You will be able to copy or WhatsApp it after saving.</small></label>
+    ${saved ? `<p class="muted sm">✓ The current password is on record, so no other details are needed.</p>`
+      : `<label>Current password (needed once)<input name="cur" required autocomplete="off" placeholder="The password you last gave ${esc(u.name.split(" ")[0])}">
+      <small class="muted">This person was added before passwords were recorded. Enter the password you shared with them (e.g. their temporary password). After this, it is remembered.</small></label>`}`,
+  async (f) => {
+    if (f.pw.trim().length < 6) throw new Error("Password must be at least 6 characters");
+    try { await store.setPassword(u, f.pw.trim(), (f.cur || "").trim() || null); }
+    catch (e) {
+      if (e.message === "WRONG_CURRENT") throw new Error(saved
+        ? `The recorded password no longer works — ${u.name} may have changed it. Ask them for their current password, or use "Forgot password?" on the sign-in page.`
+        : "That current password is not correct. Check it and try again.");
+      if (e.message === "NO_CURRENT") throw new Error("Enter the current password");
+      throw e;
+    }
+    setTimeout(() => shareLoginModal(u, f.pw.trim(), false), 50);
+  }, "Set password");
+  $("#gen", form).onclick = () => { $("[name=pw]", form).value = genPassword(); };
+  if (saved) {
+    // allow the admin to enter the current password if the recorded one is out of date
+    const add = document.createElement("button");
+    add.type = "button"; add.className = "link sm"; add.textContent = "Recorded password out of date? Enter the current one";
+    add.onclick = () => { add.outerHTML = `<label>Current password<input name="cur" autocomplete="off"></label>`; };
+    $(".modal-body", form).appendChild(add);
+  }
+}
+function shareLoginModal(u, pw, isNew) {
+  const link = location.origin + location.pathname;
+  const msg = `Hi ${u.name.split(" ")[0]}, ${isNew ? "your login for the Renew+ Marketing Task Tracker is ready" : "your Renew+ Marketing Task Tracker password has been reset"}.\n\nLink: ${link}\nEmail: ${u.email}\nPassword: ${pw}\n\nPlease keep it private.`;
+  const form = modal(isNew ? "Person added — share login" : "Password set — share login", `
+    <p>${isNew ? `${esc(u.name)} has been added.` : `The new password for ${esc(u.name)} is active now.`} Share these details with them:</p>
+    <textarea id="shareTxt" rows="8" readonly>${esc(msg)}</textarea>`,
+  async () => {}, "Done");
+  const foot = $(".modal-foot", form);
+  $(".cancel", foot).remove();
+  foot.insertAdjacentHTML("afterbegin", `<button type="button" class="btn" id="copyTxt">Copy</button><a class="btn" id="waTxt" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">Share on WhatsApp</a>`);
+  $("#copyTxt", form).onclick = async () => {
+    try { await navigator.clipboard.writeText(msg); toast("Copied"); }
+    catch (e) { $("#shareTxt", form).select(); document.execCommand("copy"); toast("Copied"); }
+  };
 }

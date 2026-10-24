@@ -1,9 +1,9 @@
 // Firebase-backed data store (Auth + Cloud Firestore).
 // Access control is enforced server-side by firestore.rules.
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut,
-  sendPasswordResetEmail, createUserWithEmailAndPassword,
+  sendPasswordResetEmail, createUserWithEmailAndPassword, updatePassword,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc,
@@ -63,6 +63,8 @@ export async function createUser({ name, email, password, role, branches }) {
     active: true, createdAt: new Date().toISOString(),
   };
   await setDoc(doc(db, "users", cred.user.uid), p);
+  await saveCredential(cred.user.uid, p.email, password);
+  deleteApp(sec).catch(() => {});
   return { uid: cred.user.uid, ...p };
 }
 
@@ -140,4 +142,35 @@ export async function listBudgets({ branches, from, to }) {
 export async function saveBudget(b) {
   const { id, ...data } = b;
   await setDoc(doc(db, "budgets", id), data, { merge: true });
+}
+
+// ---- admin-managed passwords (free-plan workaround)
+// The browser can only change a password while signed in as that person, so the app keeps
+// each person's current password in credentials/{uid} (readable by admins only, see rules),
+// signs in as them in a separate hidden session, and sets the new password.
+async function saveCredential(uid, email, password) {
+  await setDoc(doc(db, "credentials", uid), { email, password, updatedAt: new Date().toISOString(), updatedBy: auth.currentUser?.uid || "" });
+}
+export async function getCredential(uid) {
+  const s = await getDoc(doc(db, "credentials", uid));
+  return s.exists() ? s.data() : null;
+}
+export async function setPassword(user, newPassword, currentPassword) {
+  const saved = await getCredential(user.uid);
+  const current = currentPassword || saved?.password;
+  if (!current) throw new Error("NO_CURRENT");
+  const sec = initializeApp(cfg.firebaseConfig, "pw-" + Date.now());
+  const secAuth = getAuth(sec);
+  try {
+    const cred = await signInWithEmailAndPassword(secAuth, user.email, current);
+    if (cred.user.uid !== user.uid) throw new Error("This login belongs to a different person record.");
+    await updatePassword(cred.user, newPassword);
+    await fbSignOut(secAuth);
+  } catch (e) {
+    if (["auth/invalid-credential", "auth/wrong-password", "auth/invalid-login-credentials"].includes(e.code)) throw new Error("WRONG_CURRENT");
+    throw e;
+  } finally {
+    deleteApp(sec).catch(() => {});
+  }
+  await saveCredential(user.uid, user.email, newPassword);
 }

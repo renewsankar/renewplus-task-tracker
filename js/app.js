@@ -918,7 +918,7 @@ function userModal(u) {
     const data = { name: f.name.trim(), role: f.role, branches, branch: branches[0] || "" };
     if (u) { await store.updateUser(u.uid, data); Object.assign(u, data); toast("Saved"); }
     else {
-      const nu = await store.createUser({ ...data, email: f.email.trim(), password: f.password }); S.users.push(nu);
+      const nu = await store.createUser({ ...data, email: f.email.trim(), password: f.password, remember: !pwHelper() }); S.users.push(nu);
       renderView(); setTimeout(() => shareLoginModal(nu, f.password, true), 50); return;
     }
     renderView();
@@ -952,13 +952,18 @@ function viewSettings() {
       ${box("leadSources", "Lead sources", "Where leads come from, one per line.")}
       ${box("paidSources", "Paid lead sources (have a budget)", "Copy the exact names from Lead sources that have ad spend. These get budget lines and CPL.")}
       ${box("leadServices", "Lead services", "Treatment / service the lead asked about, one per line.")}
-    </div><button class="btn primary">Save settings</button></form>`;
+    </div>
+    <section class="card" style="margin-bottom:16px"><h3>Password helper URL</h3>
+      <p class="muted sm">Paste the URL of the password helper you deployed on Google Cloud (it looks like https://setuserpassword-….run.app). With it, “Set password” on the People page works without the old password.</p>
+      <input name="passwordFunctionUrl" type="url" placeholder="https://setuserpassword-xxxxxxxxxx.asia-south1.run.app" value="${esc(s.passwordFunctionUrl || "")}"></section>
+    <button class="btn primary">Save settings</button></form>`;
   $("#sf").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const lines = (k) => [...new Set(f.get(k).split("\n").map((x) => x.trim()).filter(Boolean))];
     const ns = { ...S.settings, branches: lines("branches"), categories: lines("categories"), leadSources: lines("leadSources"),
-      leadServices: lines("leadServices"), paidSources: lines("paidSources") };
+      leadServices: lines("leadServices"), paidSources: lines("paidSources"), passwordFunctionUrl: (f.get("passwordFunctionUrl") || "").trim() };
+    if (ns.passwordFunctionUrl && !/^https:\/\//.test(ns.passwordFunctionUrl)) return toast("Password helper URL must start with https://", true);
     if (!ns.branches.length || !ns.categories.length || !ns.leadSources.length || !ns.leadServices.length)
       return toast("Locations, categories, lead sources and services each need at least one line", true);
     const bad = ns.paidSources.filter((p) => !ns.leadSources.includes(p));
@@ -1135,7 +1140,23 @@ const genPassword = () => {
   const r = crypto.getRandomValues(new Uint32Array(6));
   return "Renew@" + [...r].map((n) => c[n % c.length]).join("");
 };
+const pwHelper = () => (DEMO ? "demo" : (S.settings.passwordFunctionUrl || "").trim());
 async function passwordModal(u) {
+  if (pwHelper()) {
+    const form = modal(`Set password — ${esc(u.name)}`, `
+      <div class="task-sum"><b>${esc(u.name)}</b><span class="muted sm">${esc(u.email)}</span></div>
+      <label>New password<div class="pw-row"><input name="pw" required minlength="6" value="${genPassword()}" autocomplete="off">
+        <button type="button" class="btn sm" id="gen">Generate</button></div>
+        <small class="muted">At least 6 characters. Their old password stops working and they are signed out of other devices.</small></label>`,
+    async (f) => {
+      const pw = f.pw.trim();
+      if (pw.length < 6) throw new Error("Password must be at least 6 characters");
+      await store.setPasswordServer(pwHelper(), u.uid, pw);
+      setTimeout(() => shareLoginModal(u, pw, false), 50);
+    }, "Set password");
+    $("#gen", form).onclick = () => { $("[name=pw]", form).value = genPassword(); };
+    return;
+  }
   let saved = null;
   try { saved = await store.getCredential(u.uid); } catch (e) { /* treated as not saved */ }
   const form = modal(`Set password — ${esc(u.name)}`, `

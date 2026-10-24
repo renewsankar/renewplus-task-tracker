@@ -221,3 +221,10 @@ export async function setPassword(user, newPassword, currentPassword) {
   (db.credentials ||= {})[user.uid] = { email: user.email, password: newPassword };
   save();
 }
+
+export async function setPasswordServer(url, uid, password) {
+  if (!isAdmin()) throw new Error("Permission denied");
+  const u = db.users.find((x) => x.uid === uid);
+  (db.credentials ||= {})[uid] = { email: u.email, password };
+  save();
+}

@@ -53,7 +53,7 @@ export async function listUsers() {
 }
 
 // Creates the login with a secondary app instance so the admin stays signed in.
-export async function createUser({ name, email, password, role, branches }) {
+export async function createUser({ name, email, password, role, branches, remember = true }) {
   const sec = initializeApp(cfg.firebaseConfig, "secondary-" + Date.now());
   const secAuth = getAuth(sec);
   const cred = await createUserWithEmailAndPassword(secAuth, email, password);
@@ -63,7 +63,7 @@ export async function createUser({ name, email, password, role, branches }) {
     active: true, createdAt: new Date().toISOString(),
   };
   await setDoc(doc(db, "users", cred.user.uid), p);
-  await saveCredential(cred.user.uid, p.email, password);
+  if (remember) await saveCredential(cred.user.uid, p.email, password);
   deleteApp(sec).catch(() => {});
   return { uid: cred.user.uid, ...p };
 }
@@ -173,4 +173,16 @@ export async function setPassword(user, newPassword, currentPassword) {
     deleteApp(sec).catch(() => {});
   }
   await saveCredential(user.uid, user.email, newPassword);
+}
+
+// Preferred: server helper (Cloud Run function) sets the password directly — no old password needed.
+export async function setPasswordServer(url, uid, password) {
+  const token = await auth.currentUser.getIdToken();
+  let res;
+  try {
+    res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({ uid, password }) });
+  } catch (e) { throw new Error("Could not reach the password helper. Check the helper URL in Settings."); }
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || !out.ok) throw new Error(out.error || `Password helper error (${res.status})`);
 }
